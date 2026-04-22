@@ -4,17 +4,33 @@ import threading
 HOST = "127.0.0.1"
 PORT = 9000
 
-clients = []
 
-def broadcast(current_client, msg_type, msg : bytes):
-    data = msg_type + len(msg).to_bytes(8, "big") + msg
+class Team:
+    id_team : int
+    client : socket.socket
+    name : str
+    password : str
 
-    for client in clients:
-        if client != current_client:
-            try:
-                client.sendall(data)
-            except:
-                clients.remove(client)
+    def is_equal(self, team):
+        return 1 if team.name == self.name and team.password == self.password else 0
+
+
+def send_msg(sender: int, receiver : int, msg_type, msg : bytes):
+   data =  msg_type + sender.to_bytes(1, "big") + len(msg).to_bytes(8, "big") + msg
+
+   for team in teams:
+       print(team.id_team)
+       print(receiver)
+       if receiver == team.id_team:
+           team_recv = get_team(receiver)
+           if team_recv is None : return
+           try:
+               team_recv.client.sendall(data)
+           except:
+               teams.remove(team)
+
+
+teams = []
 
 
 def recv_data(client, size) -> bytes:
@@ -27,23 +43,66 @@ def recv_data(client, size) -> bytes:
     return data
 
 
-def  handle_client(client):
-    while True:
+def handle_teams(team):
+    while True: 
         try:
-            msg_type = recv_data(client, 1)
-            if msg_type is None: break
-
-            msg_size = recv_data(client, 8)
-            if msg_size is None: break
-
+            msg_type : bytes = recv_data(team.client, 1)
+            if msg_type is None : break
+            msg_receiver : bytes = recv_data(team.client, 1)
+            if msg_receiver is None : break
+            msg_size : bytes = recv_data(team.client, 8)
             size : int = int.from_bytes(msg_size, "big")
-            msg : bytes = recv_data(client, size)
+            msg : bytes = recv_data(team.client, size)
 
-            broadcast(client, msg_type, msg)
+            msg_recv = int.from_bytes(msg_receiver, "big")
+
+            send_msg(team.id_team, msg_recv, msg_type, msg)
         except:
-            clients.remove(client)
-            client.close()
+            teams.remove(team)
+            team.client.close()
             break
+
+
+def team_exist(team) -> bool | int:
+    for t in teams:
+        if t.is_equal(team): return t.id_team
+    return False
+
+
+def new_id_team() -> int:
+    print(len(teams))
+    if len(teams)==0 : return 0
+    return teams[-1].id_team+1
+
+
+def get_team(id) -> Team | None:
+    for team in teams:
+        if team.id_team == id:
+            return team
+
+
+def create_team(client) -> Team:
+    name_size_bytes : bytes | None = recv_data(client, 8)
+    name_size_int = int.from_bytes(name_size_bytes, "big") 
+    name : bytes = recv_data(client, name_size_int)
+
+    password_size_bytes : bytes | None = recv_data(client, 8)
+    passord_size_int = int.from_bytes(password_size_bytes, "big")
+    password : bytes = recv_data(client, passord_size_int)
+
+    team = Team()
+    team.name = name.decode('utf-8')
+    team.password = password.decode('utf-8')
+    team.client = client
+
+    if team_id:=team_exist(team):
+        team.id_team = team_id
+        client.sendall(team_id.to_bytes(1, "big"))
+    else:
+        team.id_team = new_id_team() 
+        client.sendall(team.id_team.to_bytes(1, "big"))
+
+    return team
 
 
 def start_server():
@@ -53,8 +112,9 @@ def start_server():
         soc.listen()
         while True:
             client, addr = soc.accept()
-            clients.append(client)
-            thread = threading.Thread(target=handle_client, args=(client,))
+            team = create_team(client)
+            teams.append(team)
+            thread = threading.Thread(target=handle_teams, args=(team,))
             thread.start() 
             print(f"Client {addr} connected...") 
 
