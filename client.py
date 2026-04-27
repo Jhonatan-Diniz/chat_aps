@@ -1,9 +1,7 @@
-from os import name
 import socket
 import threading
 import json
-
-from main import recv_data
+from pathlib import Path
 
 HOST = "127.0.0.1"
 PORT = 9000
@@ -14,6 +12,7 @@ class Team:
     client : socket.socket
     name : str
     password : str
+
 
 team = Team()
 
@@ -32,29 +31,34 @@ def chatting_receive(soc):
     while True:
         try:
             msg_type : bytes | None = receive_data(soc, 1)
-            if (msg_type is None):break
+            if msg_type is None:break
             msg_sender : bytes | None = receive_data(soc, 1)
             if msg_sender is None: break
             msg_sender_id : int = int.from_bytes(msg_sender, "big")
             msg_size : bytes | None= receive_data(soc, 8)
-            if (msg_size is None):break
+            if msg_size is None:break
             size = int.from_bytes(msg_size, "big")
             
             msg : bytes | None = receive_data(soc, size)
             if (msg is None):break
 
-            with open(f"{team.id_team}_{msg_sender_id}.json", "a") as chat_file:
-                if (msg_type == b"T"):
-                    print('\n'+msg.decode("utf-8")+'\n')
-                    data = {"sender": msg_sender_id, "receiver": team.id_team, "content":{"text":msg.decode("utf-8")}}
-                    chat_file.write(json.dumps(data) + ",\n")
-                if (msg_type == b"I"):
-                    with open("new_file_image.jpg", "wb") as image_file:
-                        image_file.write(msg)
-                    data = {"sender": msg_sender_id, "receiver": team.id_team, "content":{"image":"new_file_image.jpg"}}
-                    chat_file.write(json.dumps(data) + ",\n")
-           
-
+            if (msg_type == b"T"):
+                print('\n'+msg.decode("utf-8")+'\n')
+                data = {"sender": msg_sender_id, "receiver": team.id_team, "content":{"text":msg.decode("utf-8")}}
+                path = Path(f"chats/{team.id_team}_{msg_sender_id}.json")
+                path.write_text(json.dumps(data)+",\n")
+                continue
+            extension = ""
+            match msg_type:
+                case b"I": extension = ".jpg"
+                case b"P": extension = ".pdf"
+            path_images = Path("images")
+            file_number = len(list(path_images.glob(extension)))
+            file_name = f"images/chat_file_{file_number+1}{extension}"
+            file = Path(file_name)
+            file.write_bytes(msg)
+            data = {"sender": msg_sender_id, "receiver": team.id_team, "content":{extension: file_name}}
+            Path(f"chats/{team.id_team}_{msg_sender_id}.json").write_text(json.dumps(data) + ",\n")
         except Exception as e:
             print("an error ", e)
             soc.close()
@@ -96,22 +100,26 @@ def chatting_send(soc):
 
 
 def start_team(soc) -> Team:
-    team.name = input("Nome do time > ")
-    team.password = input("password > ")
-    name_size_bytes = len(team.name).to_bytes(8, byteorder='big')
-    password_size_bytes = len(team.password).to_bytes(8, byteorder='big')
-    team.client = soc
+    while True:
+        team.name = input("Nome do time > ")
+        team.password = input("password > ")
+        name_size_bytes = len(team.name).to_bytes(8, byteorder='big')
+        password_size_bytes = len(team.password).to_bytes(8, byteorder='big')
+        team.client = soc
+    
+        soc.sendall(
+            name_size_bytes + 
+            team.name.encode("utf-8") +
+            password_size_bytes + 
+            team.password.encode("utf-8")
+        )
+        team_exits : bytes | None = receive_data(soc, 1)
+        if team_exits == b"T":
+            break
+        print("Este usuário não existe...")
+    id_team_bytes : bytes | None = receive_data(soc, 1)
 
-    soc.sendall(
-        name_size_bytes + 
-        team.name.encode("utf-8") +
-        password_size_bytes + 
-        team.password.encode("utf-8")
-    )
-
-    id_team_bytes : bytes = recv_data(soc, 1)
-
-    team.id_team = int.from_bytes(id_team_bytes, 'big')
+    team.id_team = int.from_bytes(id_team_bytes, 'big') if id_team_bytes is not None else -1
     return team
 
 
