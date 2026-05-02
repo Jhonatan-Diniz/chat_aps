@@ -2,9 +2,8 @@ import socket
 import threading
 import sqlite3
 
-HOST = "127.0.0.1"
-PORT = 9000
-
+HOST = "0.0.0.0"
+PORT = 8080
 
 class Team:
     id_team : int
@@ -15,25 +14,33 @@ class Team:
     def is_equal(self, team):
         return 1 if team.name == self.name and team.password == self.password else 0
 
-
 teams = []
 teams_lock = threading.Lock()
-
+running = True
 
 def start_server():
+    global running
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as soc:
         print("Starting server...")
         soc.bind((HOST, PORT))
         soc.listen()
-        while True:
-            client, addr = soc.accept()
-            print(f"Client {addr} connected...")
+        soc.settimeout(1)
+        try:
+            while running:
+                try:
+                    client, addr = soc.accept()
+                except socket.timeout:
+                    continue
+                print(f"Client {addr} connected...")
 
-            threading.Thread(
-                target=client_session,
-                args=(client,),
-                daemon=True
-            ).start()
+                threading.Thread(
+                    target=client_session,
+                    args=(client,),
+                    daemon=True
+                ).start()
+        except KeyboardInterrupt as e:
+            print(f"\nEncerrando o servidor.")
+            running = False
 
 
 def client_session(client):
@@ -173,6 +180,15 @@ def get_team(id) -> Team | None:
             if team.id_team == id:
                 return team
 
+def get_router_ip() -> str:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    finally:
+        s.close()
 
 if __name__ == "__main__":
+    print(f"IP do servidor: {get_router_ip()}")
+    print(f"Porta: {PORT}")
     start_server()
