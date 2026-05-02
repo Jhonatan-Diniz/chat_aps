@@ -3,7 +3,8 @@ name = "chat-aps"
 version = "0.1.0"
 description = ""
 authors = [
-    {name = "jhonatan"}
+    {name = "Jhonatan Vieira Diniz"},
+	{name = "Yáskara Santangelo"}
 ]
 requires-python = ">=3.13"
 dependencies = [

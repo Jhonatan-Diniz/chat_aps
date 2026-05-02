@@ -17,10 +17,7 @@ class Team:
 
 
 teams = []
-
-
-conn = sqlite3.connect("equipes.db")
-cur = conn.cursor()
+teams_lock = threading.Lock()
 
 
 def start_server():
@@ -30,78 +27,115 @@ def start_server():
         soc.listen()
         while True:
             client, addr = soc.accept()
-            team = login_team(client)
-            teams.append(team)
-            thread = threading.Thread(target=handle_teams, args=(team,))
-            thread.start() 
             print(f"Client {addr} connected...")
 
+            threading.Thread(
+                target=client_session,
+                args=(client,),
+                daemon=True
+            ).start()
 
-def login_team(client) -> Team:
+
+def client_session(client):
+    conn = sqlite3.connect("equipes.db")
+    cur = conn.cursor()
+    team = None
+
+    try:
+        team = login_team(client, cur)
+        if team is None: return
+        with teams_lock:
+            teams.append(team)
+        client.sendall(b"T"+team.id_team.to_bytes(1, "big"))
+        handle_teams(team)
+
+    finally:
+        if team is not None: 
+            with teams_lock:
+                if team in teams:
+                    teams.remove(team)
+        client.close()
+        conn.close()
+
+
+def login_team(client, cur) -> Team | None:
     while True:
         name_size_bytes : bytes | None = recv_data(client, 8)
+        if name_size_bytes is None: return None
         name_size_int = int.from_bytes(name_size_bytes, "big") 
-        name : bytes = recv_data(client, name_size_int)
+        name : bytes | None = recv_data(client, name_size_int)
+        if name is None: return
     
         password_size_bytes : bytes | None = recv_data(client, 8)
+        if password_size_bytes is None: break
         passord_size_int = int.from_bytes(password_size_bytes, "big")
-        password : bytes = recv_data(client, passord_size_int)
+        password : bytes | None = recv_data(client, passord_size_int)
+        if password is None: return
     
         team = Team()
         team.name = name.decode('utf-8')
         team.password = password.decode('utf-8')
         team.client = client
+
+        id_team = team_exist(team, cur)
     
-        if team_id:=team_exist(team):
-            team.id_team = team_id
-            client.sendall(b"T" + team_id.to_bytes(1, "big"))
-            break
-        else:
+        if not id_team:
             client.sendall(b"F")
-    return team
+            continue
+
+        team.id_team = id_team
+
+        with teams_lock:
+            if team_is_connected(team):
+                client.sendall(b"A")
+                continue
+        return team
  
 
 def handle_teams(team):
     while True: 
         try:
-            msg_type : bytes = recv_data(team.client, 1)
-            msg_receiver : bytes = recv_data(team.client, 1)
+            msg_type : bytes | None = recv_data(team.client, 1)
+            if msg_type is None: break
+            msg_receiver : bytes | None = recv_data(team.client, 1)
+            if msg_receiver is None: break
+
             if msg_type == b"G":
                 msg_recv_id = int.from_bytes(msg_receiver, "big")
-                get_team_name_by_id(msg_recv_id, team.soc)
+                get_team_name_by_id(msg_recv_id, team.client)
                 continue
 
-            msg_size : bytes = recv_data(team.client, 8)
+            msg_size : bytes | None= recv_data(team.client, 8)
+            if msg_size is None: break
             size : int = int.from_bytes(msg_size, "big")
-            msg : bytes = recv_data(team.client, size)
+            msg : bytes | None = recv_data(team.client, size)
+            if msg is None: break
             msg_recv_id = int.from_bytes(msg_receiver, "big")
 
             send_msg(team.id_team, msg_recv_id, msg_type, msg)
-        except:
-            teams.remove(team)
-            team.client.close()
+        except Exception as e:
+            print("ERROR ", e)
             break
 
 
 def send_msg(sender: int, receiver : int, msg_type, msg : bytes):
-   data =  msg_type + sender.to_bytes(1, "big") + len(msg).to_bytes(8, "big") + msg
+    data =  msg_type + sender.to_bytes(1, "big") + len(msg).to_bytes(8, "big") + msg
 
-   for team in teams:
-       if receiver == team.id_team:
-           team_recv = get_team(receiver)
-           if team_recv is None : return
-           try:
-               team_recv.client.sendall(data)
-           except:
-               teams.remove(team)
+    team_recv = get_team(receiver)
+
+    if team_recv is None: return
+    try:
+        team_recv.client.sendall(data)
+    except Exception as e:
+        print("Error ao enviar ", e)
 
 
-def recv_data(client, size) -> bytes:
+def recv_data(client, size) -> bytes | None:
     data = b""
     while len(data) < size:
         pack = client.recv(size - len(data))
-        if pack is None:
-            break
+        if not pack:
+            return None
         data += pack
     return data
 
@@ -109,28 +143,35 @@ def recv_data(client, size) -> bytes:
 def get_team_name_by_id(id, req):
     team_name : bytes = b""
     for team in teams:
-        if team.id == id:
+        if team.id_team == id:
             team_name : bytes = team.name.encode("utf-8")
     data : bytes = \
     (len(team_name).to_bytes(1, "big") + team_name)
     req.sendall(data)
 
 
-def team_exist(team) -> bool | int:
-    cur.execute(f"SELECT id FROM equipes WHERE name='{team.name}' AND password='{team.password}'")
-    res = cur.fetchone()
-    if not res: return False
-
-    team = res[0]
-    print(team)
-    if team: return team
+def team_is_connected(team) -> bool:
+    for t in teams:
+        if team.is_equal(t):
+            return True
     return False
 
 
+def team_exist(team, cur) -> bool | int:
+    cur.execute(
+        "SELECT id FROM equipes WHERE name=? AND password=?",
+        (team.name, team.password)
+    )
+    res = cur.fetchone()
+    if not res: return False
+
+    return res[0]
+
 def get_team(id) -> Team | None:
-    for team in teams:
-        if team.id_team == id:
-            return team
+    with teams_lock:
+        for team in teams:
+            if team.id_team == id:
+                return team
 
 
 if __name__ == "__main__":
